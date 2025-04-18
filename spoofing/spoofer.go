@@ -2,6 +2,9 @@ package spoofing
 
 import (
 	"bytes"
+	"math"
+	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -128,21 +131,27 @@ func (spoofer baseSpoofer) generatePath(prepared []ProcessedRecord) ([]models.Po
 	generatedPaths := []models.Position{}
 	for newPath := range pathChan {
 		waypoints := []*gpx.WptType{}
-		starTime := time.Now()
+		startTime := time.Now()
 		for i, pos := range newPath {
-			wayPoint := *gpx.WptType{
-			}
+            if i == 0 {
+                wayPoint := &gpx.WptType{
+                    Lat: pos.Lat,
+                    Lon: pos.Lon,
+                    Ele: pos.Elv,
+                    Time: startTime,
+			    }
+                waypoints = append(waypoints, wayPoint)
+                continue
+            }
 
-			if i == 0 {
-
-			}
-			distance := getDistance(pos, newPath[])
-			waypoints = append(waypoints, *gpx.WptType{
+			distance := getDistance(pos, newPath[i-1])
+            duration := distance / (MIN_SPEED + rand.Float64()*(MAX_SPEED - MIN_SPEED))
+			waypoints = append(waypoints, &gpx.WptType{
 				Lat: pos.Lat,
 				Lon: pos.Lon,
 				Ele: pos.Elv,
-				Time: time.
-			})
+                Time: startTime.Add(time.Duration(duration)),
+ 			})
 		}
 
 		newGpx := &gpx.GPX{
@@ -158,7 +167,7 @@ func getDistance(pos1 models.Position, pos2 models.Position) float64 {
 	deltaPhi := (pos2.Lat - pos1.Lat) * math.Pi / 180
 	deltaLambda := (pos2.Lon- pos1.Lon) * math.Pi / 180
 
-	R = 6371e3
+    R := 6371e3
 
     a := math.Sin(deltaPhi/2)*math.Sin(deltaPhi/2) +
         math.Cos(phi1)*math.Cos(phi2)*
