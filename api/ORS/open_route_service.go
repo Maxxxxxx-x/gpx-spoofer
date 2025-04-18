@@ -31,21 +31,21 @@ type responseBody struct {
 
 // lon lat
 
-func parseDecodedBody(body responseBody) []models.Position {
+func parseDecodedBody(reqBody requestBody, respBody responseBody) []models.Position {
 	startPos := models.Position{
-		Lon: body.Bbox[0],
-		Lat: body.Bbox[1],
+		Lon: reqBody.Coordinates[0][0],
+		Lat: reqBody.Coordinates[0][1],
 	}
 
 	endPos := models.Position{
-		Lon: body.Bbox[2],
-		Lat: body.Bbox[3],
+		Lon: reqBody.Coordinates[1][0],
+		Lat: reqBody.Coordinates[1][1],
 	}
 
 	var parsedPos []models.Position
 	parsedPos = append(parsedPos, startPos)
 
-	for _, pos := range body.Features[0].Geometry.Coordinates {
+	for _, pos := range respBody.Features[0].Geometry.Coordinates {
 		currentPos := models.Position{
 			Lon: pos[0],
 			Lat: pos[1],
@@ -75,17 +75,17 @@ func (api routeAPI) GetRouteForPositions(positions []models.Position) ([]models.
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
 	var decodedBody responseBody
-	if err := json.Unmarshal(body, &decodedBody); err != nil {
+	if err := json.Unmarshal(respBody, &decodedBody); err != nil {
 		return nil, err
 	}
-	fmt.Println(decodedBody)
-	return parseDecodedBody(decodedBody), nil
+	// fmt.Println(decodedBody)
+	return parseDecodedBody(reqBody, decodedBody), nil
 }
 
 func New(routeUrl string) RouteAPI {

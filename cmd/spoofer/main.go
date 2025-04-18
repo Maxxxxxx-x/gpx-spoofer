@@ -29,8 +29,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer dbConn.Close()
+	log.Println("Connected to database!")
 
 	db := db.New(dbConn)
+
+
 	spoofer := spoofing.New(routeApi, elevApi, db)
-	spoofer.TestStart()
+	spoofer.Start()
+	log.Println("Completed")
 }

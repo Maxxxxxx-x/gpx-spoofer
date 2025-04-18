@@ -14,6 +14,7 @@ import (
 type Database interface {
 	GetRecordsFromDatabase() ([]sqlc.Record, error)
 	GetRecordFromDatabaseById(id string) (sqlc.Record, error)
+	InsertSpoofedRoute(duration, distance, highest, lowest float64, trailName, gpxData string) error
 }
 
 type BaseDatabase struct {
@@ -31,9 +32,11 @@ func (db BaseDatabase) GetRecordsFromDatabase() ([]sqlc.Record, error) {
 	defer cancel()
 
 	queryParams := sqlc.GetRecordsParams{
-		Limit: db.limit,
+		Limit:  db.limit,
 		Offset: db.currentOffset,
 	}
+
+	db.currentOffset += db.limit
 
 	records, err := db.queries.GetRecords(ctx, queryParams)
 	if err != nil {
@@ -50,9 +53,9 @@ func (db BaseDatabase) GetRecordFromDatabaseById(id string) (sqlc.Record, error)
 	if err != nil {
 		return sqlc.Record{}, err
 	}
+
 	return record, nil
 }
-
 
 func (db BaseDatabase) InsertSpoofedRoute(duration, distance, highest, lowest float64, trailName, gpxData string) error {
 	recordId, err := utils.GenerateULID()
@@ -63,21 +66,24 @@ func (db BaseDatabase) InsertSpoofedRoute(duration, distance, highest, lowest fl
 	elevationDiff := highest - lowest
 
 	insertParam := sqlc.InsertSpoofedRecordParams{
-		ID: recordId,
-		Duration: &duration,
-		Distance: &distance,
-		Highestpoint: &highest,
-		Lowestpoint: &lowest,
+		ID:            recordId,
+		Duration:      &duration,
+		Distance:      &distance,
+		Highestpoint:  &highest,
+		Lowestpoint:   &lowest,
 		Elevationdiff: &elevationDiff,
-		Trails: &trailName,
-		Rawdata: &gpxData,
+		Trails:        &trailName,
+		Rawdata:       &gpxData,
 	}
 
 	ctx, cancel := createCtx()
 	defer cancel()
+	fmt.Println("Preparing insert")
 	if err := db.queries.InsertSpoofedRecord(ctx, insertParam); err != nil {
+		fmt.Println(err)
 		return err
 	}
+	fmt.Println("Compete!")
 	return nil
 }
 
@@ -85,7 +91,7 @@ func New(dbConn *pgxpool.Pool) Database {
 	database := BaseDatabase{
 		currentOffset: 0,
 		queries:       sqlc.New(dbConn),
-		limit: 50,
+		limit:         50,
 	}
 
 	return database
@@ -116,5 +122,10 @@ func CreateDatabaseConnection(config config.Database) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if err := connPool.Ping(context.Background()); err != nil {
+		return nil, err
+	}
+
 	return connPool, err
 }

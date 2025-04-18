@@ -1,9 +1,8 @@
 package spoofing
 
 import (
-	"bytes"
+	"log"
 	"math"
-	"math/rand"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -13,7 +12,7 @@ import (
 	"github.com/Maxxxxxx-x/gpx-spoofer/db"
 	"github.com/Maxxxxxx-x/gpx-spoofer/models"
 	"github.com/Maxxxxxx-x/gpx-spoofer/sql/sqlc"
-	"github.com/twpayne/go-gpx"
+	"github.com/tkrajina/gpxgo/gpx"
 )
 
 /*
@@ -26,7 +25,7 @@ shove into db
 */
 
 const (
-	TEST_ID   = "01JE60J5TSM3F99832MPGPF3NQ"
+	TEST_ID   = "01JE5XVK96N6FFDKXPK49R13HH"
 	MAX_SPEED = 1
 	MIN_SPEED = 0.5
 )
@@ -66,27 +65,30 @@ func prepareRecords(records []sqlc.Record) ([]ProcessedRecord, error) {
 			distance:       *record.Distance,
 		}
 
-		gpxBytes := bytes.NewBufferString(*record.Rawdata)
-		parsed, err := gpx.Read(gpxBytes)
+		gpxBytes := []byte(*record.Rawdata)
+
+		parsed, err := gpx.ParseBytes(gpxBytes)
 		if err != nil {
 			processedRecord.error = err
 			processedRecords = append(processedRecords, processedRecord)
 			continue
 		}
 
+		startPoint := parsed.Tracks[0].Segments[0].Points[0]
 		processedRecord.startPoint = models.Position{
-			Lat: parsed.Wpt[0].Lat,
-			Lon: parsed.Wpt[0].Lon,
-			Elv: parsed.Wpt[0].Ele,
+			Lat: startPoint.GetLatitude(),
+			Lon: startPoint.GetLongitude(),
+			Elv: startPoint.Elevation.Value(),
 		}
 
-		processedRecord.startTimestamp = parsed.Wpt[0].Time.String()
+		processedRecord.startTimestamp = startPoint.Timestamp.String()
 
-		endIdx := len(parsed.Wpt) - 1
+		points := parsed.Tracks[0].Segments[0].Points
+		endIdx := len(points) - 1
 		processedRecord.endPoint = models.Position{
-			Lat: parsed.Wpt[endIdx].Lat,
-			Lon: parsed.Wpt[endIdx].Lon,
-			Elv: parsed.Wpt[endIdx].Ele,
+			Lat: points[endIdx].GetLatitude(),
+			Lon: points[endIdx].GetLongitude(),
+			Elv: points[endIdx].Elevation.Value(),
 		}
 		processedRecord.error = nil
 		processedRecords = append(processedRecords, processedRecord)
@@ -95,14 +97,10 @@ func prepareRecords(records []sqlc.Record) ([]ProcessedRecord, error) {
 	return processedRecords, nil
 }
 
-func (spoofer baseSpoofer) generatePath(prepared []ProcessedRecord) ([]models.Position, error) {
+func (spoofer baseSpoofer) generatePath(prepared []ProcessedRecord) error {
 	errChan := make(chan error)
-	doneChan := make(chan int)
-	pathChan := make(chan []models.Position)
 
 	defer close(errChan)
-	defer close(doneChan)
-	defer close(pathChan)
 	var wg sync.WaitGroup
 
 	for _, record := range prepared {
@@ -117,78 +115,135 @@ func (spoofer baseSpoofer) generatePath(prepared []ProcessedRecord) ([]models.Po
 			if err != nil {
 				errChan <- err
 				wg.Done()
+				return
 			}
+
 			newPath, err := spoofer.elevApi.GetElevations(path)
 			if err != nil {
 				errChan <- err
 				wg.Done()
+				return
 			}
 
-			pathChan <- newPath
+			var gpxFile gpx.GPX
+			gpxFile.Version = "1.1"
+			startTime := time.Now()
+			currentTime := startTime
+			totalDistance := 0.0
+			highest := newPath[0].Elv
+			lowest := newPath[0].Elv
+			var points []gpx.GPXPoint
+			for i, pos := range newPath {
+				if i == 0 {
+					currentPoint := gpx.GPXPoint{}
+					currentPoint.Latitude = pos.Lat
+					currentPoint.Longitude = pos.Lon
+					currentPoint.Elevation.SetValue(pos.Elv)
+					currentPoint.Timestamp = startTime
+					points = append(points, currentPoint)
+					continue
+				}
+
+				distance := getDistance(pos, newPath[i-1])
+				totalDistance += distance
+				speed := MIN_SPEED + rand.Float64()*(MAX_SPEED-MIN_SPEED)
+				duration := distance / speed
+				currentPoint := gpx.GPXPoint{}
+				currentPoint.Latitude = pos.Lat
+				currentPoint.Longitude = pos.Lon
+				currentPoint.Elevation.SetValue(pos.Elv)
+				currentTime = currentTime.Add(time.Duration(duration * 1000000000))
+				currentPoint.Timestamp = currentTime
+				if highest < pos.Elv {
+					highest = pos.Elv
+				}
+				if lowest > pos.Elv {
+					lowest = pos.Elv
+				}
+				points = append(points, currentPoint)
+			}
+
+			var segments []gpx.GPXTrackSegment
+			segments = append(segments, gpx.GPXTrackSegment{
+				Points: points,
+			})
+			var tracks []gpx.GPXTrack
+			tracks = append(tracks, gpx.GPXTrack{
+				Segments: segments,
+			})
+			gpxFile.Tracks = tracks
+			gpxFile.Creator = ""
+			xmlBytes, err := gpxFile.ToXml(gpx.ToXmlParams{
+				Version: "1.1",
+				Indent:  true,
+			})
+			if err != nil {
+				errChan <- err
+				wg.Done()
+				return
+			}
+			duration := currentTime.Sub(startTime)
+			log.Println("Inserting...")
+			if err := spoofer.db.InsertSpoofedRoute(
+				duration.Seconds(),
+				totalDistance,
+				highest,
+				lowest,
+				record.trailName,
+				string(xmlBytes),
+			); err != nil {
+				errChan <- err
+				log.Printf("Error: %v", err.Error())
+				wg.Done()
+				return
+			}
+			log.Printf("Inserted spoofed %s", record.trailId)
 		}()
+		wg.Wait()
 	}
 
-	generatedPaths := []models.Position{}
-	for newPath := range pathChan {
-		waypoints := []*gpx.WptType{}
-		startTime := time.Now()
-		for i, pos := range newPath {
-            if i == 0 {
-                wayPoint := &gpx.WptType{
-                    Lat: pos.Lat,
-                    Lon: pos.Lon,
-                    Ele: pos.Elv,
-                    Time: startTime,
-			    }
-                waypoints = append(waypoints, wayPoint)
-                continue
-            }
-
-			distance := getDistance(pos, newPath[i-1])
-            duration := distance / (MIN_SPEED + rand.Float64()*(MAX_SPEED - MIN_SPEED))
-			waypoints = append(waypoints, &gpx.WptType{
-				Lat: pos.Lat,
-				Lon: pos.Lon,
-				Ele: pos.Elv,
-                Time: startTime.Add(time.Duration(duration)),
- 			})
-		}
-
-		newGpx := &gpx.GPX{
-			Version: "1.1",
-			Wpt: waypoints,
-		}
-	}
+	return nil
 }
 
 func getDistance(pos1 models.Position, pos2 models.Position) float64 {
 	phi1 := pos1.Lat * math.Pi / 180
 	phi2 := pos2.Lat * math.Pi / 180
 	deltaPhi := (pos2.Lat - pos1.Lat) * math.Pi / 180
-	deltaLambda := (pos2.Lon- pos1.Lon) * math.Pi / 180
+	deltaLambda := (pos2.Lon - pos1.Lon) * math.Pi / 180
 
-    R := 6371e3
+	R := 6371e3
 
-    a := math.Sin(deltaPhi/2)*math.Sin(deltaPhi/2) +
-        math.Cos(phi1)*math.Cos(phi2)*
-            math.Sin(deltaLambda/2)*math.Sin(deltaLambda/2)
-    c := 2 * math.Asin(math.Sqrt(a))
-    dist := R * c
+	a := math.Sin(deltaPhi/2)*math.Sin(deltaPhi/2) +
+		math.Cos(phi1)*math.Cos(phi2)*
+			math.Sin(deltaLambda/2)*math.Sin(deltaLambda/2)
+	c := 2 * math.Asin(math.Sqrt(a))
+	dist := R * c
 
-    diffElevation := pos2.Elv - pos1.Elv
-    dist3D := math.Sqrt(dist*dist + diffElevation*diffElevation)
+	diffElevation := pos2.Elv - pos1.Elv
+	dist3D := math.Sqrt(dist*dist + diffElevation*diffElevation)
 	return dist3D
 }
 
 func (spoofer baseSpoofer) Start() error {
-	records, err := spoofer.db.GetRecordsFromDatabase()
-	if err != nil {
-		return err
-	}
+	const total_records = 511788
+	loops := int(math.Round(total_records / 50))
 
-	prepared, err := prepareRecords(records)
-	if err != nil {
-		return err
+	for range loops {
+		log.Println("Fetching records...")
+		records, err := spoofer.db.GetRecordsFromDatabase()
+		if err != nil {
+			log.Printf("Error: %v", err.Error())
+		}
+
+		prepared, err := prepareRecords(records)
+		if err != nil {
+			log.Printf("Error: %v", err.Error())
+		}
+
+		err = spoofer.generatePath(prepared)
+		if err != nil {
+			log.Printf("Error: %v", err.Error())
+		}
 	}
 
 	return nil
@@ -203,6 +258,11 @@ func (spoofer baseSpoofer) TestStart() error {
 	records := []sqlc.Record{record}
 
 	prepared, err := prepareRecords(records)
+	if err != nil {
+		return err
+	}
+
+	err = spoofer.generatePath(prepared)
 	if err != nil {
 		return err
 	}
