@@ -32,7 +32,7 @@ func (q *Queries) GetRecordById(ctx context.Context, id string) (Record, error) 
 }
 
 const getRecords = `-- name: GetRecords :many
-SELECT id, userid, fileid, duration, distance, ascent, descent, elevationdiff, trails, rawdata FROM Records LIMIT $1 OFFSET $2
+SELECT id, userid, fileid, duration, distance, ascent, descent, elevationdiff, trails, rawdata FROM Records WHERE Distance > 400 AND ElevationDiff <> 0 LIMIT $1 OFFSET $2
 `
 
 type GetRecordsParams struct {

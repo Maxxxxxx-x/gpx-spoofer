@@ -1,5 +1,5 @@
 -- name: GetRecords :many
-SELECT * FROM Records LIMIT $1 OFFSET $2;
+SELECT * FROM Records WHERE Distance > 400 AND ElevationDiff <> 0 LIMIT $1 OFFSET $2;
 
 -- name: GetRecordById :one
 SELECT * FROM Records WHERE id = $1 LIMIT 1;
